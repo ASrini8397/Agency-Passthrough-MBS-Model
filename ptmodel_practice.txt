@@ -98,7 +98,6 @@ class PassThrough:
         df['cashflow'] = cash
         df['smm'] = smm_a
         self.df = df
-        # df.to_csv(r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\pt_main.csv', index=False)
         return df
 
     def WAL(self):
@@ -117,7 +116,7 @@ class PassThrough:
 
         today = dt.date.today()
         curvedf = pd.read_csv(
-            r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\daily-treasury-rates.csv',
+            r'FILE PATH REDACTED',
             index_col='Date', parse_dates=True)
         for col in curvedf.columns:
             number = str(curvedf[col].name)
@@ -157,7 +156,6 @@ class PassThrough:
         price = ((df['px_weight'].sum()) / (self.orig_bal)) * 100
         # print(price)
         self.price= price
-        # df.to_csv(r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\pt.csv', index=False)
         return price
 
     def measure_yield(self):
