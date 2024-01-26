@@ -1,0 +1,209 @@
+import pandas as pd
+import numpy as np
+import time
+import datetime as dt
+from scipy.interpolate import CubicSpline
+from random import uniform
+from random import random
+
+startTime = time.time()
+
+class PassThrough:
+
+    def __init__(self, orig_bal, cpn, PTR, WAM, WALA, psa, spread):
+        self.orig_bal = orig_bal
+        self.cpn = cpn
+        self.PTR = PTR
+        self.WAM = WAM
+        self.WALA= WALA
+        self.cpr = 6.0
+        self.psa = psa
+        self.spread = spread
+
+    def cashflow(self):
+        """
+        To generate cashflows of a PT
+        PTR= passthrough rate (net servicing/g-fees)
+        :return:
+        """
+        self.cpn = float(self.cpn / 100)
+        self.PTR = float(self.PTR / 100)
+        self.cpr = float(self.cpr / 100)
+        self.psa = float(self.psa / 100)
+        adj = float(.083333333)
+        # yearly adjustment val for smm
+        bal = float(self.orig_bal)
+        cols = ['month', 'term', 'bal', 'smm', 'mtg_payment', 'net_interest', 'interest', 'scheduled_principal',
+                'prepayment', 'total_principal', 'cashflow']
+        df = pd.DataFrame(columns=cols)
+
+        month_a = []
+        term_ab = []
+        bal_a = []
+        smm_a = []
+        mtg_a = []
+        net = []
+        int_a = []
+        sch = []
+        pre = []
+        total = []
+        cash = []
+
+        for i in range(0, self.WAM):
+            n = self.WAM
+            month = (self.WALA -1) +i
+            term = float(self.WALA  + i)
+            if (term <= 30):
+                term_a = float((term + 1) / 30)
+                cpr_a = (self.cpr * term_a * self.psa)
+                # print(cpr * psa* term_a)
+            elif (term > 30):
+                cpr_a = float(self.cpr * self.psa)
+
+            smm = round(float(1 - ((1 - cpr_a) ** adj)), 10)
+            numerator = float(self.cpn / 12) * (((self.cpn / 12) + 1) ** n)
+            denominator = float(((1 + (self.cpn / 12)) ** n) - 1)
+            mtg_payment = float(bal * (numerator / denominator))
+            if mtg_payment > bal:
+                mtg_payment = bal
+                # to ensure no negative balances
+            interest = float((self.cpn / 12) * bal)
+            net_interest = float((self.PTR / 12) * bal)
+            scheduled_principal = float(mtg_payment - interest)
+            prepayment = float(smm * (bal - scheduled_principal))
+            total_principal = float(scheduled_principal + prepayment)
+            cashflow = float(net_interest + total_principal)
+            month_a.append(month)
+            term_ab.append(term)
+            bal_a.append(bal)
+            mtg_a.append(mtg_payment)
+            net.append(net_interest)
+            int_a.append(interest)
+            sch.append(scheduled_principal)
+            pre.append(prepayment)
+            total.append(total_principal)
+            cash.append(cashflow)
+            smm_a.append(smm)
+            bal = bal - total_principal
+
+        df['month'] = month_a
+        df['term'] = term_ab
+        df['bal'] = bal_a
+        df['mtg_payment'] = mtg_a
+        df['net_interest'] = net
+        df['interest'] = int_a
+        df['scheduled_principal'] = sch
+        df['prepayment'] = pre
+        df['total_principal'] = total
+        df['cashflow'] = cash
+        df['smm'] = smm_a
+        self.df = df
+        # df.to_csv(r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\pt_main.csv', index=False)
+        return df
+
+    def WAL(self):
+        df = self.df
+        df['weights'] = ((df['month'] * df['total_principal']) / (12 * self.orig_bal)).astype(float)
+        wal = float(df['weights'].sum())
+        self.wal = wal
+        return wal
+
+    def price(self):
+        """
+        Using cubic spline interpolation to find monthly discount rate in place of bootstrapping theoretical spot rate
+        Curve data is CMT curve taken from Daily Treasury Par Yield Curve Rates from U.S Department of the Treasury
+        :return:
+        """
+
+        today = dt.date.today()
+        curvedf = pd.read_csv(
+            r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\daily-treasury-rates.csv',
+            index_col='Date', parse_dates=True)
+        for col in curvedf.columns:
+            number = str(curvedf[col].name)
+            number = float(number.split(' ')[0])
+
+            if 'Yr' in str(curvedf[col].name):
+                number = float(number * 12)
+                """
+                This is to get the time periods in terms of months to assist in interpolating the discount rate on a monthly
+                basis to the nearest or interpolated treasury spot rate
+                """
+
+            curvedf = curvedf.rename(columns={col: number})
+        df = self.df
+        target = len(df.index)
+        spread = self.spread
+        spread = float(spread / 100)
+        slist = list(curvedf.columns)
+        wal_array = np.asarray(slist)
+
+        nearest = (np.abs(wal_array - target)).argmin()
+        target_range = wal_array[nearest]
+
+        curvedf = curvedf.iloc[curvedf.index.get_loc(today, method='nearest')]
+
+        wal_range = list(range(1, int(target_range) + 1))
+        wal_df = pd.DataFrame(columns=['time'])
+        wal_df['time'] = wal_range
+        wal_df['time'] = wal_df['time'].astype(float)
+        curvedf = curvedf.reset_index()
+        curvedf.columns = ['time', 'rates']
+        wal_df = wal_df.merge(curvedf, how='left', on='time')
+        cs = CubicSpline(curvedf['time'], curvedf['rates'])
+        wal_df['rates'] = cs(wal_df['time'])
+        df['rates'] = wal_df['rates'] / 100
+        df['px_weight'] = df['cashflow'] / ((1 + ((df['rates'] / 12) + (float(spread / 100)/12))) ** df['month'])
+        price = ((df['px_weight'].sum()) / (self.orig_bal)) * 100
+        # print(price)
+        self.price= price
+        # df.to_csv(r'\\naeast.ad.jpmorganchase.com\home2\nahome00381\R726653\jpmDesk\Desktop\pt.csv', index=False)
+        return price
+
+    def measure_yield(self):
+        df=self.df
+        price=self.price
+        try_num = random()
+        df['try_rates']= (try_num)/12
+        df['try_px_weights']= df['cashflow']/ ((1 + (df['try_rates'] / 12)) ** df['month'])
+        try_price=  ((df['try_px_weights'].sum()) / (self.orig_bal)) * 100
+
+        while abs(try_price- price) > .001:
+            if try_price> price:
+                new_try= uniform(df['try_rates'].iloc[0], 1)
+                df['try_rates']= df['try_rates']+ (new_try/12)
+            elif try_price < price:
+                new_try= uniform(.01, df['try_rates'].iloc[0])
+                df['try_rates']= df['try_rates']- (new_try/12)
+            df['try_px_weights']= df['cashflow']/ ((1 + (df['try_rates'] / 12) ) ** df['month'])
+            try_price=  ((df['try_px_weights'].sum()) / (self.orig_bal)) * 100
+
+        yield_a= ((df['try_rates'].mean()))*100
+        self.yield_a= yield_a
+        return yield_a
+
+
+    def duration(self):
+        df=self.df
+        y= self.yield_a/100
+        increment= .01
+        df['y_up']= df['cashflow']/ ((1 + ((y/12) + (increment/12)  )) ** df['month'])
+        df['y_down']= df['cashflow']/ ((1 + ((y/12) - (increment/12)  )) ** df['month'])
+        price_up= (df['y_up'].sum()/ (self.orig_bal)) * 100
+        price_down= (df['y_down'].sum()/ (self.orig_bal)) * 100
+        effective_duration= (price_down - price_up)/ (2 * self.price * increment)
+
+        return effective_duration
+
+
+
+x = PassThrough(100000000, 6.5, 6.0, 355, 2,  349.0, 172.00)
+x.cashflow()
+print('WAL: ', x.WAL())
+print('Px: ', x.price())
+print('Yield: ', x.measure_yield(), '%')
+print('Duration: ', x.duration())
+TotalTime = float(time.time() - startTime)
+print('Run Time: ', TotalTime)
+exit()
+
